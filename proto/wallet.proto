@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package wallet;
+
+service WalletService {
+  rpc AddWallet (WalletRequest) returns (Empty);
+}
+
+message WalletRequest {
+  string chain = 1;
+  string address = 2;
+}
+
+message Empty {}
+// Empty implements Default via generated code in tonic
