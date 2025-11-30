@@ -1,7 +1,6 @@
-```
 # Crypto-Puller: Multi-Chain USDT Poller
 
-A Rust application that monitors confirmed USDT transfers across TRON, TON, and Ethereum blockchains, saves progress to PostgreSQL, and publishes events to Kafka.
+A Rust application that monitors confirmed USDT transfers across TRON, TON, and Ethereum blockchains, saves progress to PostgreSQL, and publishes events to Kafka. Now includes dynamic wallet management via HTTP API, gRPC, and Kafka consumer, along with Prometheus metrics.
 
 ## Features
 
@@ -13,6 +12,9 @@ A Rust application that monitors confirmed USDT transfers across TRON, TON, and 
 - **Graceful Shutdown**: Handles Ctrl+C for clean exit
 - **Event Sinks**: Console output (JSON) and Kafka producer
 - **Docker Compose**: Ready-to-run environment with PostgreSQL, Kafka, and Zookeeper
+- **Dynamic Wallet Management**: Add wallets at runtime via HTTP API, gRPC service, or Kafka messages
+- **Metrics and Monitoring**: Prometheus metrics exposed for events processed
+- **Service Architecture**: Separates polling, API, gRPC, and metrics into concurrent services
 
 ## Prerequisites
 
@@ -34,9 +36,10 @@ A Rust application that monitors confirmed USDT transfers across TRON, TON, and 
 
 3. Edit `.env` with your API keys and wallet addresses:
    - Obtain API keys for TRON Grid (Trongrid), TON (QuickNode or Toncenter), and Ethereum RPC (Infura/Alchemy)
-   - List your wallet addresses for each chain (comma-separated)
+   - List your wallet addresses for each chain (comma-separated) or add them dynamically later
    - Set ENABLE_CHAIN flags to choose which blockchains to monitor
    - Set USE_CONSOLE_INSTEAD_KAFKA to choose output method
+   - Set HTTP_PORT and GRPC_PORT for API services
 
 4. Start the infrastructure with Docker Compose:
    ```bash
@@ -44,7 +47,7 @@ A Rust application that monitors confirmed USDT transfers across TRON, TON, and 
    ```
    This starts PostgreSQL, Kafka, and Zookeeper.
 
-5. Run database migrations (optional, auto-run on startup):
+5. Run database migrations (auto-run on startup):
    ```bash
    cargo sqlx migrate run
    ```
@@ -60,6 +63,8 @@ A Rust application that monitors confirmed USDT transfers across TRON, TON, and 
 Environment variables in `.env`:
 
 - `DATABASE_URL`: PostgreSQL connection string
+- `HTTP_PORT`: Port for HTTP API server (default 3000)
+- `GRPC_PORT`: Port for gRPC service (default 50051)
 - `USE_CONSOLE_INSTEAD_KAFKA`: If true, outputs events to console only; if false, sends to Kafka (default false)
 - `KAFKA_BROKERS`: Kafka brokers (e.g., localhost:9092) - required if USE_CONSOLE_INSTEAD_KAFKA=false
 - `KAFKA_TOPIC`: Kafka topic for events - required if USE_CONSOLE_INSTEAD_KAFKA=false
@@ -73,9 +78,9 @@ Environment variables in `.env`:
   - Toncenter: `https://toncenter.com/api/v2/jsonRPC`
   The client forces HTTP/1.1 to avoid TLS/ALPN issues with some providers, and the build uses native-tls for broader TLS compatibility.
 - `ETHEREUM_RPC_URL`: Ethereum RPC URL (HTTPS). You can use providers like GetBlock (recommended in the issue): e.g. `https://go.getblock.io/<your-project-id>` or Infura/Alchemy.
-- `WALLETS_TRON`: Comma-separated TRON wallet addresses
-- `WALLETS_TON`: Comma-separated TON wallet addresses
-- `WALLETS_ETHEREUM`: Comma-separated Ethereum wallet addresses
+- `WALLETS_TRON`: Comma-separated TRON wallet addresses (optional if adding dynamically)
+- `WALLETS_TON`: Comma-separated TON wallet addresses (optional if adding dynamically)
+- `WALLETS_ETHEREUM`: Comma-separated Ethereum wallet addresses (optional if adding dynamically)
 - `START_FROM_TRON`: ISO 8601 timestamp to start scanning TRON from (optional). If not set, starts from the latest block.
 - `START_FROM_TON`: ISO 8601 timestamp for TON (optional). If not set, starts from the latest block.
 - `START_FROM_ETHEREUM`: ISO 8601 timestamp for Ethereum (optional). If not set, starts from the latest block.
@@ -85,26 +90,42 @@ Environment variables in `.env`:
 - Run `cargo run --release` to start polling.
 - Events will be sent to the selected sink (console or Kafka based on USE_CONSOLE_INSTEAD_KAFKA).
 - Use Ctrl+C to shut down gracefully, progress is saved automatically.
+- Add wallets dynamically:
+  - Via HTTP API: `POST http://localhost:3000/wallets` with JSON `{"chain": "Ethereum", "address": "0x..."}`
+  - Via gRPC: Use a gRPC client to call `WalletService.AddWallet` on port 50051
+  - Via Kafka: Send JSON message `{"chain": "Ethereum", "address": "0x..."}` to the events topic (if configured)
+- Monitor metrics at `http://localhost:9090/metrics`
 
 ## Architecture
 
-- `src/main.rs`: Application entry point, sets up scanners and sinks
+- `src/main.rs`: Application entry point, sets up scanners, API server, gRPC server, Kafka consumer, and metrics
+- `src/lib.rs`: Library exports for shared modules
 - `src/models.rs`: Data models (Chain, TransferEvent, etc.)
-- `src/scanner.rs`: Universal scanning logic and progress management
+- `src/scanner.rs`: Universal scanning logic, progress management, and wallet operations
 - `src/sink.rs`: Event sinks (Console, Kafka)
 - `src/chains/`: Chain-specific scanners (TRON, TON, Ethereum)
+- `src/api.rs`: HTTP API routes for wallet management
+- `src/config.rs`: Configuration loading from environment
+- `src/metrics.rs`: Prometheus metrics setup and server
+- `proto/wallet.proto`: Protobuf definition for gRPC WalletService
 
 ## Dependencies
 
 Key crates:
 - `tokio`: Async runtime
 - `sqlx`: PostgreSQL integration
-- `rdkafka`: Kafka producer
+- `rdkafka`: Kafka producer and consumer
 - `reqwest`: HTTP client for APIs
 - `ethers`: Ethereum RPC client
 - `serde`: Serialization
 - `chrono`: Date/time handling
 - `tracing`: Logging
+- `axum`: Web framework for HTTP API
+- `tonic`: gRPC framework
+- `prost`: Protobuf serialization
+- `prometheus`: Metrics collection
+- `clap`: CLI argument parsing (future use)
+- `figment`: Configuration management
 
 ## Troubleshooting
 
@@ -115,8 +136,8 @@ Key crates:
 - Check Docker containers are running: `docker compose ps`
 - Logs are via `tracing`, set `RUST_LOG=info` for more details
 - For production, adjust database connection pool and polling intervals
+- If dynamic wallet addition doesn't work, ensure the wallets table is created via migrations
 
 ## License
 
 [Your License Here]
-```

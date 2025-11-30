@@ -1,34 +1,28 @@
-use crate::config::Config;
 use crate::models::Chain;
 use crate::scanner::add_wallet;
 use crate::WalletsCache;
 use axum::{extract::State, http::StatusCode, Json, Router};
 use serde::Deserialize;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
-use validator::Validate;
 
-#[derive(Deserialize, Validate)]
-struct AddWalletRequest {
-    #[validate(length(min = 1))]
-    chain: String,
-    #[validate(length(min = 1))]
-    address: String,
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct AddWalletRequest {
+    pub chain: String,
+    pub address: String,
 }
 
 #[derive(Clone)]
-struct AppState {
-    pool: sqlx::PgPool,
-    wallets: WalletsCache,
+pub struct AppState {
+    pub pool: sqlx::PgPool,
+    pub wallets: WalletsCache,
 }
 
 async fn add_wallet_handler(
     State(state): State<AppState>,
-    Json(mut payload): Json<AddWalletRequest>,
+    Json(payload): Json<AddWalletRequest>,
 ) -> (StatusCode, &'static str) {
-    if payload.validate().is_err() {
+    if payload.chain.is_empty() || payload.address.is_empty() {
         return (StatusCode::BAD_REQUEST, "Invalid request");
     }
     let chain = match payload.chain.as_str() {
@@ -37,7 +31,7 @@ async fn add_wallet_handler(
         "Ethereum" => Chain::Ethereum,
         _ => return (StatusCode::BAD_REQUEST, "Invalid chain"),
     };
-    match add_wallet(&state.pool, chain, payload.address).await {
+    match add_wallet(&state.pool, chain, payload.address.clone()).await {
         Ok(added) if added => {
             state
                 .wallets

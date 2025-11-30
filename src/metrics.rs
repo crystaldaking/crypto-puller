@@ -1,6 +1,6 @@
-use std::sync::Arc;
 use axum::Router;
 use prometheus::Registry;
+use std::sync::Arc;
 use tracing::info;
 
 pub struct Metrics {
@@ -16,7 +16,7 @@ impl Metrics {
             "Total events processed",
             registry
         )
-            .unwrap();
+        .unwrap();
         Self {
             registry,
             events_processed,
@@ -28,11 +28,11 @@ impl Metrics {
     }
 
     pub fn export(&self) -> String {
-        prometheus::gather()
-            .iter()
-            .map(|m| prometheus::TextEncoder::new().format(m))
-            .collect::<Vec<_>>()
-            .join("\n")
+        let encoder = prometheus::TextEncoder::new();
+        let mut buffer = String::new();
+        let metric_families = prometheus::gather();
+        encoder.encode_utf8(&metric_families, &mut buffer).unwrap();
+        buffer
     }
 }
 
@@ -42,10 +42,8 @@ pub fn start_metrics_server(metrics: Arc<Metrics>) {
             "/metrics",
             axum::routing::get(move || async move { metrics.export() }),
         );
-        axum::Server::bind(&"0.0.0.0:9090".parse().unwrap())
-            .serve(app.into_make_service())
-            .await
-            .unwrap();
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:9090").await.unwrap();
+        axum::serve(listener, app).await.unwrap();
         info!("Metrics server on 9090");
     });
 }
