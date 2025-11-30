@@ -80,6 +80,15 @@ pub fn start_kafka_consumer(
                             }
                             Err(e) => {
                                 error!("Kafka recv error: {}", e);
+                                // при критических ошибках (UnknownTopicOrPartition и т.д.) выходим
+                                let err_str = e.to_string();
+                                if err_str.contains("UnknownTopicOrPartition") 
+                                    || err_str.contains("BrokerNotAvailable")
+                                    || err_str.contains("AllBrokersDown") {
+                                    error!("Critical Kafka error, stopping consumer: {}", e);
+                                    break;
+                                }
+                                // для других ошибок ждём и пытаемся снова
                                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                             }
                         }
