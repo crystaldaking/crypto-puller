@@ -1,3 +1,13 @@
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
+#![allow(unused_macros)]
+#![allow(non_camel_case_types)]
+#![allow(unused_unsafe)]
+#![allow(unreachable_pub)]
+#![allow(async_fn_in_trait)]
+
 pub mod api;
 pub mod chains;
 pub mod config;

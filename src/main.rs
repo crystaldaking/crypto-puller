@@ -9,7 +9,7 @@ use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tokio::signal;
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tonic::transport::Server;
+use tonic::transport::Server as TonicServer;
 use crypto_puller::WalletsCache;
 
 mod config;
@@ -90,16 +90,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let addr = format!("0.0.0.0:{}", config.http_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
-    let http_server = axum::serve(listener, build_router(app_state));
-    tokio::spawn(async move { http_server.await.unwrap() });
+    let app = build_router(app_state);
+    let server = axum::serve(listener, app);
 
-    let grpc_server = Server::builder()
-        .add_service(WalletServiceServer::new(WalletServiceImpl {
-            pool: pool.clone(),
-            wallets: Arc::clone(&wallets_cache),
-        }))
-        .serve(format!("0.0.0.0:{}", config.grpc_port).parse().unwrap());
-    tokio::spawn(grpc_server);
+    // prepare HTTP shutdown future (subscribes to broadcast)
+    let mut shutdown_rx_http = shutdown_tx.subscribe();
+    let http_shutdown = async move {
+        let _ = shutdown_rx_http.recv().await;
+    };
+
+    // Build sink via builder (moved earlier so event handler can use it)
+    let mut sink = sink_builder::build_sink(&config)?;
+    // clone metrics for the event task so original `metrics` stays available
+    let metrics_for_event = Arc::clone(&metrics);
+    // move rx and sink into the event task
+    let mut rx_for_event = rx;
+    let event_handle = tokio::spawn(async move {
+        while let Some(event) = rx_for_event.recv().await {
+            sink.send(event).await.ok();
+            metrics_for_event.increment_events();
+        }
+    });
+
+    let shutdown_tx_ctrl = shutdown_tx.clone();
+    let ctrlc_handle = tokio::spawn(async move {
+        let _ = signal::ctrl_c().await;
+        let _ = shutdown_tx_ctrl.send(());
+    });
+
+    // Run HTTP server in current task (so we don't require the WithGracefulShutdown future to be Send)
+    let http_result = server.with_graceful_shutdown(http_shutdown).await;
+
+    // gRPC server with graceful shutdown
+    let grpc_addr = format!("0.0.0.0:{}", config.grpc_port).parse().unwrap();
+    let svc = WalletServiceServer::new(WalletServiceImpl {
+        pool: pool.clone(),
+        wallets: Arc::clone(&wallets_cache),
+    });
+    let grpc_server = TonicServer::builder().add_service(svc);
+    let mut shutdown_rx_grpc = shutdown_tx.subscribe();
+    let grpc_future = grpc_server.serve_with_shutdown(grpc_addr, async move {
+        let _ = shutdown_rx_grpc.recv().await;
+    });
+    let grpc_handle = tokio::spawn(grpc_future);
 
     // Start Kafka consumer (moved to kafka_consumer)
     kafka_consumer::start_kafka_consumer(
@@ -110,20 +143,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown_tx.clone(),
     )?;
 
-    // Build sink via builder (moved to sink_builder)
-    let mut sink = sink_builder::build_sink(&config)?;
+    // wait for HTTP server to finish (this will return when shutdown_tx is sent)
+    let _ = http_result;
 
-    let event_handler = async {
-        while let Some(event) = rx.recv().await {
-            sink.send(event).await.ok();
-            metrics.increment_events();
-        }
-    };
-
-    tokio::select! {
-        _ = event_handler => {},
-        _ = signal::ctrl_c() => { let _ = shutdown_tx.send(()); }
-    }
+    // wait for other tasks
+    let _ = ctrlc_handle.await;
+    let _ = event_handle.await;
+    let _ = grpc_handle.await;
 
     Ok(())
 }

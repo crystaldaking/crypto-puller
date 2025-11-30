@@ -2,8 +2,9 @@ use crate::models::Chain;
 use crate::scanner::add_wallet;
 use crate::WalletsCache;
 use axum::{extract::State, http::StatusCode, Json, Router};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use axum::routing::get;
+use serde::Serialize;
+use serde_json::{Value, json};
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::trace::TraceLayer;
 
@@ -93,9 +94,17 @@ async fn add_wallet_handler(
     }
 }
 
+async fn health_handler() -> (StatusCode, Json<JsonResponse>) {
+    (
+        StatusCode::OK,
+        Json(JsonResponse::ok("ok", Some(json!({ "status": "ok" })))),
+    )
+}
+
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/wallets", axum::routing::post(add_wallet_handler))
+        .route("/health", get(health_handler))
         .layer(RequestBodyLimitLayer::new(1024)) // limit body size
         .layer(TraceLayer::new_for_http())
         .with_state(state)

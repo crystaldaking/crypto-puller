@@ -45,6 +45,7 @@ pub fn start_kafka_consumer(
                 tokio::select! {
                     _ = shutdown_rx.recv() => {
                         info!("Kafka consumer shutting down");
+                        let _ = consumer.unsubscribe();
                         break;
                     }
                     msg = consumer.recv() => {
