@@ -9,10 +9,12 @@ use serde::Deserialize;
 use serde_json::json;
 
 const USDT_CONTRACT: &str = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+const MAX_BLOCKS_PER_BATCH: u64 = 100; // Рекомендуемый размер батча для большинства RPC
 
 pub struct EthereumScanner {
     client: Client,
     base_url: String,
+    batch_size: u64,
 }
 
 impl EthereumScanner {
@@ -22,7 +24,13 @@ impl EthereumScanner {
         Ok(Self {
             client,
             base_url: http_url.to_string(),
+            batch_size: MAX_BLOCKS_PER_BATCH,
         })
+    }
+
+    pub fn with_batch_size(mut self, size: u64) -> Self {
+        self.batch_size = size;
+        self
     }
 
     // Generic JSON-RPC request helper
@@ -99,6 +107,16 @@ impl ChainScanner for EthereumScanner {
         block: u64,
         wallets: &[String],
     ) -> Result<Vec<TransferEvent>, anyhow::Error> {
+        // Используем оптимизированный метод для одного блока
+        self.scan_block_range(block, block, wallets).await
+    }
+
+    async fn scan_block_range(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        wallets: &[String],
+    ) -> Result<Vec<TransferEvent>, anyhow::Error> {
         #[derive(Deserialize)]
         struct LogEntry {
             address: String,
@@ -106,17 +124,20 @@ impl ChainScanner for EthereumScanner {
             data: String,
             #[serde(rename = "transactionHash")]
             transaction_hash: Option<String>,
+            #[serde(rename = "blockNumber")]
+            block_number: String,
         }
 
         let mut events = Vec::new();
         if wallets.is_empty() {
             return Ok(events);
         }
+
         // ERC-20 Transfer signature keccak
         let transfer_sig = keccak256(b"Transfer(address,address,uint256)");
         let topic0 = format!("0x{}", hex::encode(transfer_sig));
-        let from_block = format!("0x{:x}", block);
-        let to_block = from_block.clone();
+        let from_block_hex = format!("0x{:x}", from_block);
+        let to_block_hex = format!("0x{:x}", to_block);
 
         let mut padded_wallets = Vec::new();
         for wallet in wallets {
@@ -125,13 +146,39 @@ impl ChainScanner for EthereumScanner {
             padded_wallets.push(padded);
         }
 
-        // From logs
-        let from_logs: Vec<LogEntry> = self.rpc_request("eth_getLogs", json!([{"fromBlock": from_block, "toBlock": to_block, "address": USDT_CONTRACT, "topics": [topic0.clone(), padded_wallets.clone(), serde_json::Value::Null]}])).await?;
-        let block_timestamp = self.get_block_timestamp(block).await?;
+        // Кешируем timestamps для блоков в диапазоне
+        let mut block_timestamps = std::collections::HashMap::new();
+
+        // From logs - одним запросом для всего диапазона
+        let from_logs: Vec<LogEntry> = self
+            .rpc_request(
+                "eth_getLogs",
+                json!([{
+                    "fromBlock": from_block_hex,
+                    "toBlock": to_block_hex,
+                    "address": USDT_CONTRACT,
+                    "topics": [topic0.clone(), padded_wallets.clone(), serde_json::Value::Null]
+                }]),
+            )
+            .await?;
+
         for log in from_logs {
             if log.topics.len() < 3 {
                 continue;
             }
+
+            let block_num = u64::from_str_radix(log.block_number.trim_start_matches("0x"), 16)
+                .unwrap_or(from_block);
+
+            // Получаем timestamp блока (кешируем)
+            let timestamp = if let Some(&ts) = block_timestamps.get(&block_num) {
+                ts
+            } else {
+                let ts = self.get_block_timestamp(block_num).await?;
+                block_timestamps.insert(block_num, ts);
+                ts
+            };
+
             let from_hex = &log.topics[1];
             let to_hex = &log.topics[2];
             let from_addr =
@@ -149,8 +196,8 @@ impl ChainScanner for EthereumScanner {
 
             events.push(TransferEvent {
                 chain: Chain::Ethereum,
-                block,
-                timestamp: block_timestamp,
+                block: block_num,
+                timestamp,
                 tx_hash: log.transaction_hash.unwrap_or_default(),
                 from: from_addr.clone(),
                 to: to_addr,
@@ -160,12 +207,36 @@ impl ChainScanner for EthereumScanner {
             });
         }
 
-        // To logs
-        let to_logs: Vec<LogEntry> = self.rpc_request("eth_getLogs", json!([{"fromBlock": from_block, "toBlock": to_block, "address": USDT_CONTRACT, "topics": [topic0, serde_json::Value::Null, padded_wallets]}])).await?;
+        // To logs - одним запросом для всего диапазона
+        let to_logs: Vec<LogEntry> = self
+            .rpc_request(
+                "eth_getLogs",
+                json!([{
+                    "fromBlock": from_block_hex,
+                    "toBlock": to_block_hex,
+                    "address": USDT_CONTRACT,
+                    "topics": [topic0, serde_json::Value::Null, padded_wallets]
+                }]),
+            )
+            .await?;
+
         for log in to_logs {
             if log.topics.len() < 3 {
                 continue;
             }
+
+            let block_num = u64::from_str_radix(log.block_number.trim_start_matches("0x"), 16)
+                .unwrap_or(from_block);
+
+            // Получаем timestamp блока (кешируем)
+            let timestamp = if let Some(&ts) = block_timestamps.get(&block_num) {
+                ts
+            } else {
+                let ts = self.get_block_timestamp(block_num).await?;
+                block_timestamps.insert(block_num, ts);
+                ts
+            };
+
             let from_hex = &log.topics[1];
             let to_hex = &log.topics[2];
             let from_addr =
@@ -183,8 +254,8 @@ impl ChainScanner for EthereumScanner {
 
             events.push(TransferEvent {
                 chain: Chain::Ethereum,
-                block,
-                timestamp: block_timestamp,
+                block: block_num,
+                timestamp,
                 tx_hash: log.transaction_hash.unwrap_or_default(),
                 from: from_addr,
                 to: to_addr.clone(),
@@ -193,7 +264,16 @@ impl ChainScanner for EthereumScanner {
                 wallet: to_addr,
             });
         }
+
         Ok(events)
+    }
+
+    fn supports_batch(&self) -> bool {
+        true
+    }
+
+    fn recommended_batch_size(&self) -> u64 {
+        self.batch_size
     }
 
     async fn resolve_block_by_timestamp(

@@ -7,18 +7,52 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
 
+/// Trait для сканирования блокчейна с поддержкой батчинга
 pub trait ChainScanner {
+    /// Получить последний блок
     async fn get_latest_block(&self) -> Result<u64, anyhow::Error>;
+
+    /// Получить timestamp блока
     async fn get_block_timestamp(&self, block: u64) -> Result<DateTime<Utc>, anyhow::Error>;
+
+    /// Сканировать один блок (legacy метод)
     async fn scan_block(
         &self,
         block: u64,
         wallets: &[String],
     ) -> Result<Vec<TransferEvent>, anyhow::Error>;
+
+    /// Сканировать диапазон блоков (оптимизированный метод)
+    /// По умолчанию вызывает scan_block для каждого блока
+    async fn scan_block_range(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        wallets: &[String],
+    ) -> Result<Vec<TransferEvent>, anyhow::Error> {
+        let mut all_events = Vec::new();
+        for block in from_block..=to_block {
+            let events = self.scan_block(block, wallets).await?;
+            all_events.extend(events);
+        }
+        Ok(all_events)
+    }
+
+    /// Разрешить блок по timestamp (бинарный поиск)
     async fn resolve_block_by_timestamp(
         &self,
         timestamp: DateTime<Utc>,
     ) -> Result<u64, anyhow::Error>;
+
+    /// Поддерживает ли сканер батчинг
+    fn supports_batch(&self) -> bool {
+        false
+    }
+
+    /// Рекомендуемый размер батча
+    fn recommended_batch_size(&self) -> u64 {
+        1
+    }
 }
 
 pub async fn load_wallets(pool: &PgPool) -> Result<HashMap<Chain, Vec<String>>, anyhow::Error> {
@@ -126,8 +160,17 @@ pub async fn scan_chain<T: ChainScanner>(
     };
     save_progress(pool, &progress).await?;
 
+    let batch_size = scanner.recommended_batch_size();
+    let supports_batch = scanner.supports_batch();
+
+    info!(
+        "Starting scanner for {:?}, batch_size={}, supports_batch={}",
+        chain, batch_size, supports_batch
+    );
+
     loop {
         let latest_block = scanner.get_latest_block().await?;
+
         while current_block <= latest_block {
             let our_wallets = wallets
                 .read()
@@ -135,13 +178,32 @@ pub async fn scan_chain<T: ChainScanner>(
                 .get(&chain)
                 .cloned()
                 .unwrap_or_default();
-            let events = scanner.scan_block(current_block, &our_wallets).await?;
+
+            // Определяем диапазон для обработки
+            let to_block = std::cmp::min(current_block + batch_size - 1, latest_block);
+
+            let events = if supports_batch && batch_size > 1 {
+                // Батчинг: обрабатываем диапазон блоков за раз
+                info!(
+                    "Batch scanning blocks {}..{} for chain {:?}",
+                    current_block, to_block, chain
+                );
+                scanner
+                    .scan_block_range(current_block, to_block, &our_wallets)
+                    .await?
+            } else {
+                // Обычное сканирование по одному блоку (когда batch_size=1)
+                scanner.scan_block(current_block, &our_wallets).await?
+            };
+
             info!(
-                "Processing block {} for chain {:?}, found {} events",
+                "Processing blocks {}..{} for chain {:?}, found {} events",
                 current_block,
+                to_block,
                 chain,
                 events.len()
             );
+
             for event in events {
                 info!(
                     "Event for our wallet: wallet={}, direction={:?}, amount={}, timestamp={:?}",
@@ -150,11 +212,15 @@ pub async fn scan_chain<T: ChainScanner>(
                 info!("{}", serde_json::to_string_pretty(&event).unwrap());
                 tx.send(event).await?;
             }
-            progress.last_block = current_block;
-            progress.last_timestamp = scanner.get_block_timestamp(current_block).await?;
+
+            // Обновляем прогресс на последний обработанный блок
+            progress.last_block = to_block;
+            progress.last_timestamp = scanner.get_block_timestamp(to_block).await?;
             save_progress(pool, &progress).await?;
-            current_block += 1;
+
+            current_block = to_block + 1;
         }
+
         tokio::time::sleep(tokio::time::Duration::from_secs(30)).await; // Poll every 30 seconds
     }
 }

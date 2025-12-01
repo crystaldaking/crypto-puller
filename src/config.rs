@@ -18,10 +18,17 @@ pub(crate) struct Config {
     pub start_from_ethereum: Option<String>,
     pub ton_rpc_url: Option<String>,
     pub ton_api_key: Option<String>,
+    pub tron_rpc_url: Option<String>,
     pub ethereum_rpc_url: Option<String>,
     pub kafka_brokers: Option<String>,
     pub kafka_topic: Option<String>,
     pub log_level: String,
+    // Optimization parameters
+    pub ethereum_batch_size: Option<u64>,
+    pub tron_batch_size: Option<u64>,
+    pub ton_batch_size: Option<u64>,
+    pub max_concurrent_requests: Option<usize>,
+    pub batch_timeout_secs: Option<u64>,
 }
 
 // Дефолты, если какого-то env нет
@@ -41,10 +48,17 @@ impl Default for Config {
             start_from_ethereum: None,
             ton_rpc_url: None,
             ton_api_key: None,
+            tron_rpc_url: None,
             ethereum_rpc_url: None,
             kafka_brokers: None,
             kafka_topic: None,
             log_level: "info".to_string(),
+            // Optimization defaults
+            ethereum_batch_size: Some(100),
+            tron_batch_size: Some(5), // QuickNode Discover plan limit: 5 blocks max
+            ton_batch_size: Some(10),
+            max_concurrent_requests: Some(5),
+            batch_timeout_secs: Some(30),
         }
     }
 }

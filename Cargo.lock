@@ -705,6 +705,7 @@ name = "crypto-puller"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
  "axum-test",
  "bs58",
@@ -712,6 +713,7 @@ dependencies = [
  "dotenv",
  "ethers",
  "figment",
+ "futures",
  "hex",
  "prometheus",
  "prost",

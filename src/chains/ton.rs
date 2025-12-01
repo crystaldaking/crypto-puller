@@ -6,11 +6,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 const USDT_JETTON_MASTER: &str = "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs";
+const MAX_BLOCKS_PER_BATCH: u64 = 10; // TON обрабатывает меньше блоков за раз
 
 pub struct TonScanner {
     client: Client,
     api_key: Option<String>,
     base_url: String,
+    batch_size: u64,
 }
 
 impl TonScanner {
@@ -25,7 +27,13 @@ impl TonScanner {
             client,
             api_key,
             base_url,
+            batch_size: MAX_BLOCKS_PER_BATCH,
         }
+    }
+
+    pub fn with_batch_size(mut self, size: u64) -> Self {
+        self.batch_size = size;
+        self
     }
 
     // Generic JSON-RPC 2.0 request to toncenter public endpoint
@@ -186,25 +194,32 @@ impl ChainScanner for TonScanner {
         block: u64,
         wallets: &[String],
     ) -> Result<Vec<TransferEvent>, anyhow::Error> {
+        // Используем оптимизированный метод для одного блока
+        self.scan_block_range(block, block, wallets).await
+    }
+
+    async fn scan_block_range(
+        &self,
+        from_block: u64,
+        to_block: u64,
+        wallets: &[String],
+    ) -> Result<Vec<TransferEvent>, anyhow::Error> {
         let mut events = Vec::new();
-        // First get block header for specific workchain (0) to ensure consistency
-        let header_resp: BlockHeaderResponse = self
-            .rpc_request("getBlockHeader", json!({ "seqno": block, "workchain": 0 }))
-            .await?;
-        let _block_id = format!("({}, {})", header_resp.id.workchain, header_resp.id.shard); // But API uses seqno directly? Wait, for getBlockTransactions, it's by block_id which is (workchain,shard,seqno,root_hash,file_hash)
 
-        // For simplicity, query transactions by time window via JSON-RPC getTransactions equivalent
-        let block_timestamp = self.get_block_timestamp(block).await?;
-        let next_block_ts = if block < self.get_latest_block().await? {
-            self.get_block_timestamp(block + 1).await?
+        // Получаем временной диапазон для батча блоков
+        let start_timestamp = self.get_block_timestamp(from_block).await?;
+        let end_timestamp = if to_block < self.get_latest_block().await? {
+            self.get_block_timestamp(to_block + 1).await?
         } else {
-            block_timestamp + chrono::Duration::seconds(60) // Approximate 1 min
+            self.get_block_timestamp(to_block).await? + chrono::Duration::seconds(60)
         };
-        let start_ts = block_timestamp.timestamp() as u64;
-        let end_ts = next_block_ts.timestamp() as u64;
 
-        // NOTE: Toncenter JSON-RPC supports similar parameters as REST for getTransactions
-        // Limit to 100 for minimal pagination
+        let start_ts = start_timestamp.timestamp() as u64;
+        let end_ts = end_timestamp.timestamp() as u64;
+
+        // Запрашиваем транзакции за весь временной диапазон
+        // Увеличиваем лимит для батча
+        let limit = 500; // Больше транзакций для батча
         let txs: Vec<TransactionResponse> = self
             .rpc_request(
                 "getTransactions",
@@ -212,27 +227,38 @@ impl ChainScanner for TonScanner {
                     "workchain": 0,
                     "start_utime": start_ts,
                     "end_utime": end_ts,
-                    "limit": 100
+                    "limit": limit
                 }),
             )
             .await?;
+
         for tx in txs {
             for jt in &tx.jetton_transfers {
                 if jt.jetton_master == USDT_JETTON_MASTER {
+                    let tx_timestamp = DateTime::from_timestamp(tx.utime as i64, 0).unwrap();
+
+                    // Определяем приблизительный номер блока по timestamp
+                    // (в TON нет прямой связи tx -> block в этом API)
+                    let approx_block = from_block
+                        + ((tx.utime as i64 - start_timestamp.timestamp()) / 5).max(0) as u64;
+                    let block_num = approx_block.min(to_block).max(from_block);
+
                     events.push(TransferEvent {
                         chain: Chain::Ton,
-                        block,
-                        timestamp: DateTime::from_timestamp(tx.utime as i64, 0).unwrap(),
+                        block: block_num,
+                        timestamp: tx_timestamp,
                         tx_hash: tx.hash.clone(),
                         from: jt.source.clone().unwrap_or_default(),
                         to: jt.destination.clone(),
-                        amount: (jt.amount.parse::<u128>()? / 1_000_000).to_string(), // Jetton USDT has 6 decimals
-                        direction: Direction::In,                                     // Set later
+                        amount: (jt.amount.parse::<u128>()? / 1_000_000).to_string(),
+                        direction: Direction::In,
                         wallet: String::new(),
                     });
                 }
             }
         }
+
+        // Фильтруем события по нашим кошелькам
         let mut filtered_events = Vec::new();
         for event in events {
             if wallets.contains(&event.from) {
@@ -269,5 +295,13 @@ impl ChainScanner for TonScanner {
             }
         }
         Ok(low)
+    }
+
+    fn supports_batch(&self) -> bool {
+        true
+    }
+
+    fn recommended_batch_size(&self) -> u64 {
+        self.batch_size
     }
 }

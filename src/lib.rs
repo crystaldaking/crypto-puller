@@ -13,6 +13,7 @@ pub mod chains;
 pub mod config;
 pub mod models;
 pub mod scanner;
+pub mod scanner_service;
 pub mod sink;
 pub mod wallet {
     include!(concat!(env!("OUT_DIR"), "/wallet.rs"));

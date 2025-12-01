@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tracing::info;
 
 pub struct Metrics {
-    registry: Registry,
+    _registry: Registry,
     events_processed: prometheus::IntCounter,
 }
 
@@ -18,7 +18,7 @@ impl Metrics {
         )
         .unwrap();
         Self {
-            registry,
+            _registry: registry,
             events_processed,
         }
     }
