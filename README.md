@@ -411,41 +411,6 @@ docker compose ps postgres
 docker compose ps kafka
 ```
 
-## Documentation
-
-- **[QUICK_START_OPTIMIZATION.md](QUICK_START_OPTIMIZATION.md)** - 5-minute quick start guide
-- **[README_OPTIMIZATION.md](README_OPTIMIZATION.md)** - Detailed optimization guide
-- **[CHANGELOG_OPTIMIZATION.md](CHANGELOG_OPTIMIZATION.md)** - Changelog for v0.2.0
-- **[.env.example](.env.example)** - Configuration examples
-
-## Contributing
-
-Contributions are welcome! Areas for improvement:
-- Additional blockchain support (Solana, Polygon, BSC)
-- More comprehensive tests
-- Better error messages
-- Performance optimizations
-- Documentation improvements
-
-## Roadmap
-
-### v0.3.0 (Planned)
-- [ ] Adaptive batch sizing based on response time
-- [ ] Circuit breaker pattern for RPC protection
-- [ ] Redis caching for block metadata
-- [ ] WebSocket subscriptions for real-time (Ethereum)
-- [ ] Grafana dashboard templates
-- [ ] More comprehensive metrics
-
-### v0.4.0 (Future)
-- [ ] Multi-token support (not just USDT)
-- [ ] Historical data export
-- [ ] Alert notifications (Telegram, Discord)
-- [ ] Admin dashboard UI
-
-## License
-
-[Your License Here]
 
 ## Support
 
@@ -464,5 +429,3 @@ Contributions are welcome! Areas for improvement:
 ---
 
 **Built with ❤️ in Rust**
-
-Enjoy fast, reliable blockchain scanning! 🚀
